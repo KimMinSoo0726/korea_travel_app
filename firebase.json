@@ -1,0 +1,69 @@
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "koreatravelapp",
+          "appId": "1:185069647989:android:5d7545629805df914d203c",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "ios": {
+        "default": {
+          "projectId": "koreatravelapp",
+          "appId": "1:185069647989:ios:9011d3ad6fd0f79b4d203c",
+          "uploadDebugSymbols": false,
+          "fileOutput": "ios/Runner/GoogleService-Info.plist"
+        }
+      },
+      "macos": {
+        "default": {
+          "projectId": "koreatravelapp",
+          "appId": "1:185069647989:ios:9011d3ad6fd0f79b4d203c",
+          "uploadDebugSymbols": false,
+          "fileOutput": "macos/Runner/GoogleService-Info.plist"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "koreatravelapp",
+          "configurations": {
+            "android": "1:185069647989:android:5d7545629805df914d203c",
+            "ios": "1:185069647989:ios:9011d3ad6fd0f79b4d203c",
+            "macos": "1:185069647989:ios:9011d3ad6fd0f79b4d203c",
+            "web": "1:185069647989:web:f2b6e2fa7b7783504d203c",
+            "windows": "1:185069647989:web:9d3d24279596f9f54d203c"
+          }
+        }
+      }
+    }
+  },
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "disallowLegacyRuntimeConfig": true,
+      "ignore": [
+        "node_modules",
+        ".git",
+        "firebase-debug.log",
+        "firebase-debug.*.log",
+        "*.local"
+      ]
+    }
+  ],
+  "hosting": {
+    "public": "build/web",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ]
+  }
+}
