@@ -427,13 +427,19 @@ class _DayCardState extends State<_DayCard> {
                                     style: TextStyle(
                                         fontSize: 11,
                                         color: Colors.orange.shade700)),
-                              if (item.verified)
+                              if (item.verifyStatus == 'db')
+                                Text('📗 DB',
+                                    style: TextStyle(
+                                        fontSize: 10,
+                                        color: Colors.blue.shade600,
+                                        fontWeight: FontWeight.w600))
+                              else if (item.verifyStatus == 'confirmed')
                                 Text('✅ 확인됨',
                                     style: TextStyle(
                                         fontSize: 10,
                                         color: Colors.green.shade600))
                               else if (item.placeName != null)
-                                Text('⚠️ 추정',
+                                Text('⚠️ 추정됨',
                                     style: TextStyle(
                                         fontSize: 10,
                                         color: Colors.orange.shade600)),

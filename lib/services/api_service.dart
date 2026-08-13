@@ -167,6 +167,27 @@ class ApiService {
     );
   }
 
+  Future<QwenResult> chatDeepseek({
+    String? conversationId,
+    required String message,
+  }) async {
+    final callable = _functions.httpsCallable(
+      'chatWithDeepSeek',
+      options: HttpsCallableOptions(timeout: const Duration(minutes: 5)),
+    );
+    final res = await callable.call({
+      'conversationId': conversationId,
+      'message': message,
+    });
+    final data = asMap(res.data);
+    return QwenResult(
+      text: data['text'] ?? '',
+      planJson: data['planJson'] == null
+          ? null
+          : (data['planJson'] as Map).map((k, v) => MapEntry('$k', v)),
+    );
+  }
+
 
 // ───────── 북마크 ─────────
 

@@ -1,4 +1,3 @@
-
 {
   "name": "korea-travel-functions",
   "description": "Gemini proxy for Korea travel planner",
@@ -12,8 +11,8 @@
   },
   "dependencies": {
     "@google/genai": "^2.12.0",
-    "firebase-admin": "^13.0.0",
-    "firebase-functions": "^6.0.0",
+    "firebase-admin": "^13.10.0",
+    "firebase-functions": "^6.6.0",
     "mongodb": "^7.5.0"
   },
   "private": true

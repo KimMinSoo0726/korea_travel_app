@@ -22,6 +22,7 @@ class Message {
   bool get isPlan => planJson != null;
   bool get isQwen => model == 'qwen';       // ★
   bool get isGemini => model == 'gemini';
+  bool get isDeepseek => model == 'deepseek'; 
 
 
  factory Message.fromMap(Map<String, dynamic> map) => Message(

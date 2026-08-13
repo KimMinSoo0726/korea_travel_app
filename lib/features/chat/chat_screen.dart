@@ -10,6 +10,7 @@ import '../settings/trip_settings_bar.dart';
 import '../../models/bookmark.dart';
 import '../../providers/bookmark_provider.dart';
 import '../../models/bookmark_request.dart';
+import '../../providers/conversation_provider.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   final String? conversationId;
@@ -43,6 +44,8 @@ class ChatScreenState extends ConsumerState<ChatScreen> {
   final List<Message> _qwenMessages = []; // Qwen 응답 (비교용, 저장 안 함)
   bool _qwenLoading = false;
 
+final List<Message> _deepseekMessages = [];
+  bool _deepseekLoading = false;
 
   void scrollToMessage(String? id) => _scrollToMessage(id);      // 노출
   void insertBookmark(Bookmark b) => _insertBookmarkInChat(b);  
@@ -88,19 +91,28 @@ class ChatScreenState extends ConsumerState<ChatScreen> {
       setState(() {
         _messages.clear();
         _qwenMessages.clear();
+        _deepseekMessages.clear();
+
+        final hasQwen = list.any((m) => m.isQwen);
+        final hasDeep = list.any((m) => m.isDeepseek);
 
         for (final m in list) {
           if (m.role == MessageRole.user) {
             _messages.add(m);
-            if (_hasQwenData(list)) _qwenMessages.add(m);   // 양쪽에
+            if (hasQwen) _qwenMessages.add(m);
+            if (hasDeep) _deepseekMessages.add(m);
           } else if (m.isQwen) {
             _qwenMessages.add(m);
+          } else if (m.isDeepseek) {
+            _deepseekMessages.add(m);
           } else {
             _messages.add(m);
           }
         }
-        // Qwen 메시지가 있으면 비교 모드 자동 켜기
-        if (_qwenMessages.isNotEmpty) _compareMode = true;
+        if (_qwenMessages.isNotEmpty || _deepseekMessages.isNotEmpty) {
+          _compareMode = true;
+        }
+
       });
       _scrollToBottom(immediate: true);
 
@@ -134,52 +146,76 @@ class ChatScreenState extends ConsumerState<ChatScreen> {
       
   Future<void> _send(String text) async {
     if (text.trim().isEmpty || _sending) return;
+
     final fullMessage = _buildMessageWithContext(text);
     final pending = Message.pending(text);
+    final isFirstMessage = _convId == null;
 
     setState(() {
       _sending = true;
       _messages.add(Message(
         id: 'local-${DateTime.now().microsecondsSinceEpoch}',
-        role: MessageRole.user, text: text, createdAt: DateTime.now(),
-      ));
+        role: MessageRole.user, text: text, createdAt: DateTime.now()));
       if (_compareMode) {
+        final now = DateTime.now();
         _qwenMessages.add(Message(
-          id: 'qu-${DateTime.now().microsecondsSinceEpoch}',
-          role: MessageRole.user, text: text, createdAt: DateTime.now(),
-        ));
+          id: 'qu-${now.microsecondsSinceEpoch}',
+          role: MessageRole.user, text: text, createdAt: now));
+        _deepseekMessages.add(Message(
+          id: 'du-${now.microsecondsSinceEpoch}',
+          role: MessageRole.user, text: text, createdAt: now));
         _qwenLoading = true;
+        _deepseekLoading = true;
       }
       _attachedBookmarks.clear();
     });
     _scrollToBottom();
 
-    try {
-      // ① Gemini 먼저 → convId 확보
-      final res = await ref.read(apiServiceProvider).chat(
-            conversationId: _convId,
-            message: fullMessage,
-          );
-      if (!mounted) return;
+    // ① 기존 대화(convId 있음)면 즉시 병렬 호출 → 저장됨
+    if (_compareMode && !isFirstMessage) {
+      _sendToQwen(fullMessage, _convId!);
+      _sendToDeepseek(fullMessage, _convId!);
+    }
 
-      final convId = res.conversationId;
-      if (_convId == null) {
-        _convId = convId;
-        widget.onConversationCreated(convId);
+    try {
+      final res = await ref.read(apiServiceProvider)
+          .chat(conversationId: _convId, message: fullMessage);
+
+      if (isFirstMessage && res.conversationId.isNotEmpty) {
+        final st = _settingsKey.currentState;
+        if (st != null && st.isDirty) {
+          await ref.read(apiServiceProvider)
+              .saveConversationSettings(res.conversationId, st.currentSettings);
+        }
       }
 
+      if (!mounted) return;
       setState(() {
         final i = _messages.indexWhere((m) => m.id == pending.id);
         if (i >= 0) _messages[i] = res.userMessage;
         _messages.add(res.aiMessage);
       });
-      _scrollToBottom();
 
-      // ② convId 확정 후 Qwen 호출 → 저장 보장
-      if (_compareMode) {
-        _sendToQwen(convId, fullMessage);
+      if (_convId == null) {
+        _convId = res.conversationId;
+        widget.onConversationCreated(res.conversationId);
+         ref.invalidate(conversationsProvider); 
       }
 
+      // ② 첫 메시지였다면 이제 convId가 생겼으니 여기서 호출 → 저장까지 됨
+      if (_compareMode && isFirstMessage) {
+        if (_convId != null && _convId!.isNotEmpty) {
+          _sendToQwen(fullMessage, _convId!);
+          _sendToDeepseek(fullMessage, _convId!);
+        } else {
+          // 방어: convId를 못 받았으면 스피너라도 정리
+          setState(() { _qwenLoading = false; _deepseekLoading = false; });
+        }
+      }
+
+      _scrollToBottom();
+      Future.delayed(const Duration(milliseconds: 300),
+          () => _settingsKey.currentState?.reload());
       if (res.needsEnrich) _enrichMessage(res.aiMessage.id);
     } catch (e) {
       if (!mounted) return;
@@ -187,46 +223,67 @@ class ChatScreenState extends ConsumerState<ChatScreen> {
         _messages.add(Message(
           id: 'err-${DateTime.now().microsecondsSinceEpoch}',
           role: MessageRole.assistant,
-          text: '⚠️ 전송에 실패했습니다: $e',
-          createdAt: DateTime.now(),
-        ));
+          text: '⚠️ 전송 실패: $e', createdAt: DateTime.now()));
+        _qwenLoading = false;      // Gemini 실패 시 스피너 정리
+        _deepseekLoading = false;
       });
     } finally {
       if (mounted) setState(() => _sending = false);
     }
   }
 
-  Future<void> _sendToQwen(String conversationId, String message) async {
-    setState(() => _qwenLoading = true);
+ Future<void> _sendToQwen(String message, String? convId) async {
+    debugPrint('🌀 Qwen 호출 conv=$convId');
     try {
-      final r = await ref.read(apiServiceProvider).chatQwen(
-            conversationId: conversationId,     // ★ 확정된 convId
-            message: message,
-          );
+      final r = await ref.read(apiServiceProvider)
+          .chatQwen(conversationId: convId, message: message)
+          .timeout(const Duration(seconds: 90));   // ★ 무한 대기 방지
+      debugPrint('🌀 Qwen 응답 ${r.text.length}자');
       if (!mounted) return;
       setState(() {
         _qwenMessages.add(Message(
           id: 'qa-${DateTime.now().microsecondsSinceEpoch}',
-          role: MessageRole.assistant,
-          text: r.text,
-          createdAt: DateTime.now(),
-          planJson: r.planJson,
-          model: 'qwen',
-        ));
+          role: MessageRole.assistant, text: r.text,
+          createdAt: DateTime.now(), planJson: r.planJson));
       });
     } catch (e) {
+      debugPrint('🌀 Qwen 실패: $e');
       if (!mounted) return;
       setState(() {
         _qwenMessages.add(Message(
           id: 'qe-${DateTime.now().microsecondsSinceEpoch}',
           role: MessageRole.assistant,
-          text: '⚠️ Qwen 응답 실패: $e',
-          createdAt: DateTime.now(),
-          model: 'qwen',
-        ));
+          text: '⚠️ Qwen 응답 실패: $e', createdAt: DateTime.now()));
       });
     } finally {
       if (mounted) setState(() => _qwenLoading = false);
+    }
+  }
+Future<void> _sendToDeepseek(String message, String? convId) async {
+    debugPrint('🐳 DeepSeek 호출 conv=$convId');
+    try {
+      final r = await ref.read(apiServiceProvider)
+          .chatDeepseek(conversationId: convId, message: message)
+          .timeout(const Duration(seconds: 90));
+      debugPrint('🐳 DeepSeek 응답 ${r.text.length}자');
+      if (!mounted) return;
+      setState(() {
+        _deepseekMessages.add(Message(
+          id: 'da-${DateTime.now().microsecondsSinceEpoch}',
+          role: MessageRole.assistant, text: r.text,
+          createdAt: DateTime.now(), planJson: r.planJson));
+      });
+    } catch (e) {
+      debugPrint('🐳 DeepSeek 실패: $e');
+      if (!mounted) return;
+      setState(() {
+        _deepseekMessages.add(Message(
+          id: 'de-${DateTime.now().microsecondsSinceEpoch}',
+          role: MessageRole.assistant,
+          text: '⚠️ DeepSeek 응답 실패: $e', createdAt: DateTime.now()));
+      });
+    } finally {
+      if (mounted) setState(() => _deepseekLoading = false);
     }
   }
 
@@ -242,6 +299,7 @@ class ChatScreenState extends ConsumerState<ChatScreen> {
         setState(() {
           _messages.clear();
           _qwenMessages.clear();
+          _deepseekMessages.clear();
         });
       }
     }
@@ -302,8 +360,9 @@ class ChatScreenState extends ConsumerState<ChatScreen> {
                     // 왼쪽 — Gemini
                     Expanded(child: _modelColumn('Gemini', _buildBody())),
                     Container(width: 1, color: Colors.grey.shade200),
-                    // 오른쪽 — Qwen
                     Expanded(child: _modelColumn('Qwen 3.6', _buildQwenBody())),
+                    Container(width: 1, color: Colors.grey.shade200),
+                    Expanded(child: _modelColumn('DeepSeek', _buildDeepseekBody())),
                   ],
                 )
               : _buildBody()),
@@ -325,44 +384,40 @@ Widget _compareToggleBar() {
         children: [
           Icon(Icons.compare_arrows, size: 16, color: theme.colorScheme.primary),
           const SizedBox(width: 8),
-          const Text('모델 비교 (Qwen 3.6)',
+          const Text('모델 비교 (Qwen · DeepSeek)',
               style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
           const Spacer(),
           Switch(
             value: _compareMode,
             onChanged: (v) => setState(() {
               _compareMode = v;
-              if (!v) _qwenMessages.clear();   // 끄면 Qwen 내용 비움
+              if (!v) {_qwenMessages.clear(); _deepseekMessages.clear();}
             }),
           ),
         ],
       ),
     );
   }
-
-   Widget _modelColumn(String label, Widget body) {
+Widget _modelColumn(String label, Widget body) {
     final theme = Theme.of(context);
-    final isQwen = label.startsWith('Qwen');
-    return Column(
-      children: [
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(vertical: 8),
-          color: isQwen
-              ? Colors.orange.shade50
-              : theme.colorScheme.primary.withOpacity(0.06),
-          alignment: Alignment.center,
-          child: Text(label,
-              style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.bold,
-                  color: isQwen
-                      ? Colors.orange.shade800
-                      : theme.colorScheme.primary)),
-        ),
-        Expanded(child: body),
-      ],
-    );
+    Color bg, fg;
+    if (label.startsWith('Qwen')) {
+      bg = Colors.orange.shade50; fg = Colors.orange.shade800;
+    } else if (label.startsWith('DeepSeek')) {
+      bg = Colors.indigo.shade50; fg = Colors.indigo.shade700;
+    } else {
+      bg = theme.colorScheme.primary.withOpacity(0.06); fg = theme.colorScheme.primary;
+    }
+    return Column(children: [
+      Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 8),
+        color: bg, alignment: Alignment.center,
+        child: Text(label,
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: fg)),
+      ),
+      Expanded(child: body),
+    ]);
   }
 
    Widget _buildQwenBody() {
@@ -395,6 +450,38 @@ Widget _compareToggleBar() {
           isEnriching: false,
           onReplan: (_) {},           // 비활성
           // onBookmark 안 넘김 → 북마크 버튼 없음
+        );
+      },
+    );
+  }
+
+  Widget _buildDeepseekBody() {
+    if (_deepseekMessages.isEmpty && !_deepseekLoading) {
+      return Center(
+        child: Text('DeepSeek 응답이 여기 표시됩니다',
+            style: TextStyle(color: Colors.grey.shade400, fontSize: 13)),
+      );
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.symmetric(vertical: 16),
+      itemCount: _deepseekMessages.length + (_deepseekLoading ? 1 : 0),
+      itemBuilder: (_, i) {
+        if (i >= _deepseekMessages.length) {
+          return const Padding(
+            padding: EdgeInsets.only(left: 24, bottom: 8),
+            child: Row(children: [
+              SizedBox(width: 16, height: 16,
+                  child: CircularProgressIndicator(strokeWidth: 2)),
+              SizedBox(width: 12),
+              Text('DeepSeek 작성 중...', style: TextStyle(fontSize: 12)),
+            ]),
+          );
+        }
+        return MessageBubble(
+          message: _deepseekMessages[i],
+          conversationId: null,
+          isEnriching: false,
+          onReplan: (_) {},
         );
       },
     );

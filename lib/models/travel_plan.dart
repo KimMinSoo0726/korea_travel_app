@@ -248,6 +248,7 @@ class PlanItem {
   final String? petAllowed;
   final String? creditCard;
   final String? tourContentId;
+  final String verifyStatus; 
 
    PlanItem({
     required this.time,
@@ -279,6 +280,7 @@ class PlanItem {
     this.petAllowed,
     this.creditCard,
     this.tourContentId,
+    this.verifyStatus = 'estimated',
   });
 
     factory PlanItem.fromJson(Map<String, dynamic> j) => PlanItem(
@@ -300,6 +302,7 @@ class PlanItem {
         durationMin: _toInt(j['durationMin']),
         avgPrice: _toInt(j['avgPrice']),
         verified: j['verified'] == true,
+        verifyStatus: j['verifyStatus'] ??  (j['verified'] == true ? 'confirmed' : 'estimated'),
         thumbnail: j['thumbnail'],
         images: ((j['images'] ?? []) as List).map((e) => '$e').toList(),
         parking: j['parking'],
@@ -332,6 +335,7 @@ class PlanItem {
         'durationMin': durationMin,
         'avgPrice': avgPrice,
         'verified': verified,
+        'verifyStatus': verifyStatus,
         'thumbnail': thumbnail,
         'images': images,
         'parking': parking,
@@ -378,6 +382,7 @@ class PlanItem {
         durationMin: durationMin,
         avgPrice: avgPrice,
         verified: verified,
+        verifyStatus: verifyStatus,
       );
 }
 

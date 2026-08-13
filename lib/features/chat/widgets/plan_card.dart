@@ -548,14 +548,20 @@ Widget _itemTile(PlanItem item, int dayIndex, int itemIndex,
                                     style: TextStyle(
                                         fontSize: 11,
                                         color: Colors.red.shade400)),
-                              if (item.verified)
+                              if (item.verifyStatus == 'db')
+                                Text('📗 DB',
+                                    style: TextStyle(
+                                        fontSize: 10,
+                                        color: Colors.blue.shade600,
+                                        fontWeight: FontWeight.w600))
+                              else if (item.verifyStatus == 'confirmed')
                                 Text('✅ 확인됨',
                                     style: TextStyle(
                                         fontSize: 10,
                                         color: Colors.green.shade600))
                               else if (item.placeName != null &&
                                   !widget.isEnriching)
-                                Text('⚠️ 추정',
+                                Text('⚠️ 추정됨',
                                     style: TextStyle(
                                         fontSize: 10,
                                         color: Colors.orange.shade600)),

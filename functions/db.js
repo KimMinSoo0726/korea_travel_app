@@ -26,6 +26,7 @@ async function collections(uri) {
     userSettings: db.collection("userSettings"),
     routes: db.collection("routes"),
     bookmarks: db.collection("bookmarks"),
+    regionPlaces: db.collection("regionPlaces"), 
   };
 }
 
@@ -47,6 +48,10 @@ async function ensureIndexes(uri) {
     c.bookmarks.createIndex({ uid: 1, conversationId: 1, createdAt: -1 }),
     c.bookmarks.createIndex({ conversationId: 1, type: 1 }),
     c.bookmarks.createIndex({ planId: 1 }, { sparse: true }),
+    c.regionPlaces.createIndex({ regionCode: 1, "category.unified": 1 }),
+    c.regionPlaces.createIndex({ regionCode: 1, popularity: -1 }),
+    c.regionPlaces.createIndex({ location: "2dsphere" }),
+    c.regionPlaces.createIndex({ nameNorm: 1 }),
   ]);
 }
 

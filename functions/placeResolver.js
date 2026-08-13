@@ -15,6 +15,61 @@ const queryKey = (region, name) => `${norm(region)}|${norm(name)}`;
 const isFresh = (d, days) =>
   d?.fetchedAt && Date.now() - new Date(d.fetchedAt).getTime() < days * 864e5;
 
+
+// regionPlaces 문서 → applyToPlan이 먹는 place 형태로 변환
+function regionDocToPlace(d) {
+  return {
+    _id: d._id,
+    tmapPoiId: d.tmapPoiId ?? null,
+    tourContentId: d.tourContentId ?? null,
+    name: d.name,
+    nameNorm: d.nameNorm || norm(d.name),
+    category: {
+      unified: d.category?.unified ?? null,
+      tmapName: d.category?.sub ?? d.placeType ?? null,
+    },
+    address: {
+      road: d.address?.road ?? null,
+      jibun: d.address?.jibun ?? null,
+      region: d.region ?? null,
+    },
+    location: d.location ?? null,
+    contact: { phone: d.contact?.phone ?? null, homepage: d.contact?.homepage ?? null },
+    media: { thumbnail: d.media?.thumbnail ?? null, images: d.media?.images ?? [] },
+    detail: {
+      overview: d.oneLiner ?? null,
+      useTime: d.hours?.text ?? null,
+      restDate: d.hours?.closedDay ?? null,
+      parking: null, useFee: null,
+      menu: d.signature?.length ? d.signature.join(", ") : null,
+      checkIn: null, checkOut: null,
+    },
+    sources: ["db"],
+    verifyStatus: "db",   // ★
+  };
+}
+
+// 미스 대상들을 regionPlaces에서 이름으로 일괄 매칭
+async function matchRegionDb(cols, targets) {
+  const out = new Map();
+  if (!cols.regionPlaces || !targets.length) return out;
+  const normNames = [...new Set(targets.map((t) => norm(t.name)))];
+  let docs = [];
+  try {
+    docs = await cols.regionPlaces.find({ nameNorm: { $in: normNames } }).toArray();
+  } catch (e) {
+    console.warn("지역DB 매칭 실패:", e.message);
+    return out;
+  }
+  const byNorm = new Map(docs.map((d) => [d.nameNorm || norm(d.name), d]));
+  for (const t of targets) {
+    const d = byNorm.get(norm(t.name));
+    if (d) out.set(t.name, regionDocToPlace(d));
+  }
+  if (out.size) console.log(`📗 [지역DB] ${out.size}건 매칭`);
+  return out;
+}
+
 // ───────── 후보 점수 ─────────
 
 function scorePoi(p, name, unified) {
@@ -134,6 +189,8 @@ async function resolvePlace({ name, placeType, region, hintLat, hintLng }, creds
       checkOut: tour?.checkOut ?? null,
     },
 
+    verifyStatus: "confirmed",
+
     flags: { parking: t.parkFlag },
     sources: tour ? ["tmap", "tour"] : ["tmap"],
     fetchedAt: new Date().toISOString(),
@@ -180,13 +237,23 @@ async function resolveMany(targets, creds, cols) {
     });
   }
 
-  console.log(`📦 캐시 ${results.size}건 / API ${misses.length}건`);
+  const cacheCount = results.size;
 
-  // 3) 미스만 API 조회 (동시 실행 제한)
-  const todo = misses.slice(0, MAX_PLACES);
-  if (todo.length < misses.length) {
-    console.log(`⚠️ 상한 초과로 ${misses.length - todo.length}건 건너뜀`);
+  // 2.5) 지역 DB 우선 매칭 (req5·6)
+  const dbHits = await matchRegionDb(cols, misses);
+  const apiMisses = [];
+  for (const t of misses) {
+    if (dbHits.has(t.name)) results.set(t.name, dbHits.get(t.name));
+    else apiMisses.push(t);
   }
+  console.log(`📦 캐시 ${cacheCount}건 / 📗DB ${dbHits.size}건 / 🌐API ${apiMisses.length}건`);
+
+  // 3) 나머지만 API 조회 (동시 실행 제한)
+  const todo = apiMisses.slice(0, MAX_PLACES);
+  if (todo.length < apiMisses.length) {
+    console.log(`⚠️ 상한 초과로 ${apiMisses.length - todo.length}건 건너뜀`);
+  }
+  
 
   const fetched = [];
   let idx = 0;
@@ -281,15 +348,22 @@ async function resolveMany(targets, creds, cols) {
 function applyToPlan(planJson, resolved) {
   const put = (obj, key) => {
     const p = resolved.get(obj[key]);
-    if (!p) return;
+    if (!p) {
+      if (!obj.verifyStatus) {
+        obj.verifyStatus = obj.verified ? "confirmed" : "estimated";
+      }
+      return;
+    }
 
     obj.placeId = p._id;
     obj.tmapPoiId = p.tmapPoiId;
     obj.tourContentId = p.tourContentId;
 
     obj.address = p.address.road || p.address.jibun || obj.address;
-    obj.lat = p.location.coordinates[1];
-    obj.lng = p.location.coordinates[0];
+    if (p.location?.coordinates) {
+      obj.lat = p.location.coordinates[1];
+      obj.lng = p.location.coordinates[0];
+    }
 
     obj.phone = p.contact.phone ?? obj.phone;
     obj.homepage = p.contact.homepage ?? obj.homepage;
@@ -311,6 +385,8 @@ function applyToPlan(planJson, resolved) {
 
     obj.verified = true;
     obj.sources = p.sources;
+    obj.verifyStatus =
+      p.verifyStatus || (p.sources?.includes("db") ? "db" : "confirmed");  // ★
   };
 
   for (const plan of planJson.plans || []) {

@@ -8,6 +8,9 @@ const { parsePlanBlock } = require("./planParser");
 const { enrichPlanOptions } = require("./placeEnricher");
 const { collections } = require("./db");
 
+const { buildRegionBlock } = require("./regionContext");
+
+
 const GEMINI_API_KEY = defineSecret("GEMINI_API_KEY");
 const NAVER_CLIENT_ID = defineSecret("NAVER_CLIENT_ID");
 const NAVER_CLIENT_SECRET = defineSecret("NAVER_CLIENT_SECRET");
@@ -21,7 +24,13 @@ const { routeCar, routeWalk, routeTransit } = require("./tmapApi");
 const QWEN_ENDPOINT = defineSecret("QWEN_ENDPOINT"); 
 const QWEN_API_KEY = defineSecret("QWEN_API_KEY");   
 
+const DEEPSEEK_ENDPOINT = defineSecret("DEEPSEEK_ENDPOINT"); 
+const DEEPSEEK_API_KEY = defineSecret("DEEPSEEK_API_KEY");
+
 const MODEL_NAME = process.env.GEMINI_MODEL || "gemini-3.1-flash-lite";
+
+// gemini-3.1-flash-lite 실제 컨텍스트 윈도우로 맞추세요(문서 확인). 반값을 예산으로 씀.
+const MODEL_CONTEXT_TOKENS = Number(process.env.MODEL_CONTEXT_TOKENS || 1000000);
 
     
 
@@ -137,6 +146,29 @@ exports.chatWithGemini = onCall(
         console.log("⚙️ 설정 적용:\n" + settingsBlock);
       }
 
+
+      // ── 지역 DB 주입 (req4) ──
+      let regionInfo = null;
+      try {
+        const budget = Math.floor(MODEL_CONTEXT_TOKENS * 0.5);   // 컨텍스트 절반
+        const regionText = `${message} ${t.destination || ""}`;  // 메시지 + 목적지로 지역 판별
+        regionInfo = await buildRegionBlock(c.regionPlaces, regionText, {
+          tokenBudget: budget,
+        });
+        if (regionInfo) {
+          console.log(
+            `🗺 [지역DB] ${regionInfo.regionName} — ${regionInfo.included}/${regionInfo.total}곳 주입 ` +
+            `· 추정 ${regionInfo.estTokens} tok / 예산 ${budget} tok`
+          );
+        } else {
+          console.log("🗺 [지역DB] 매칭 지역 없음 → 주입 안 함");
+        }
+      } catch (e) {
+        console.warn("지역DB 주입 건너뜀:", e.message);
+      }
+
+
+
       const response = await ai.models.generateContent({
         model: MODEL_NAME,
         contents,
@@ -148,6 +180,7 @@ exports.chatWithGemini = onCall(
             (settingsBlock
               ? `【사용자가 설정한 여행 조건 — 이미 아는 정보이므로 다시 묻지 마세요】\n${settingsBlock}\n\n`
               : "") +
+            (regionInfo ? regionInfo.block + "\n" : "") +  
             SYSTEM_INSTRUCTION,
           temperature: 0.7,
           maxOutputTokens: 32768,
@@ -155,6 +188,17 @@ exports.chatWithGemini = onCall(
       });
 
       const rawText = response.text ?? ""; 
+
+      const usage = response.usageMetadata;
+      if (usage) {
+        console.log(
+          `🔢 [토큰] 입력 ${usage.promptTokenCount} · 출력 ${usage.candidatesTokenCount} · ` +
+          `합 ${usage.totalTokenCount}` +
+          (regionInfo ? ` (지역DB 추정 ${regionInfo.estTokens})` : "")
+        );
+      }
+
+
 
       const finishReason = response.candidates?.[0]?.finishReason;
       console.log("📏 응답 길이:", rawText.length, "종료사유:", finishReason);
@@ -438,7 +482,9 @@ exports.chatWithQwen = onCall(
           messages,
           temperature: 0.7,
           max_tokens: 32768,   //32768
-          stream: false,  
+          top_p:0.8,
+          stream: false,
+          chat_template_kwargs: { enable_thinking: false }, 
         }),
       });
     } catch (e) {
@@ -480,6 +526,104 @@ exports.chatWithQwen = onCall(
         createdAt: new Date().toISOString(),
       });
       console.log(`💾 [Qwen] 메시지 저장`);
+    }
+
+    return { text: parsedText, planJson };
+  }
+);
+
+
+exports.chatWithDeepSeek = onCall(
+  {
+    region: "asia-northeast3",
+    secrets: [DEEPSEEK_ENDPOINT, DEEPSEEK_API_KEY, MONGODB_URI],
+    timeoutSeconds: 300,
+    memory: "512MiB",
+    invoker: "public",
+  },
+  async (request) => {
+    if (!request.auth) throw new HttpsError("unauthenticated", "로그인 필요");
+
+    const uid = request.auth.uid;
+    const convId = request.data?.conversationId;
+    const message = request.data?.message;
+    if (!message) throw new HttpsError("invalid-argument", "message 필요");
+
+    const c = await collections(MONGODB_URI.value());
+    const history = convId
+      ? await c.messages
+          .find({ conversationId: convId, uid })
+          .sort({ createdAt: 1 })
+          .limit(20)
+          .toArray()
+      : [];
+
+    const today = new Date().toLocaleDateString("sv-SE", { timeZone: "Asia/Seoul" });
+    const weekdays = ["일","월","화","수","목","금","토"];
+    const dow = weekdays[
+      new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Seoul" })).getDay()
+    ];
+
+    const messages = [
+      { role: "system",
+        content: `【오늘 날짜: ${today} (${dow}요일), 한국 시간 기준】\n` + SYSTEM_INSTRUCTION },
+      ...history.map((m) => ({
+        role: m.role === "assistant" ? "assistant" : "user",
+        content: m.text || "",
+      })),
+      { role: "user", content: message },
+    ];
+
+    let res;
+    try {
+      res = await fetch(`${DEEPSEEK_ENDPOINT.value()}/v1/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${DEEPSEEK_API_KEY.value()}`,
+        },
+        body: JSON.stringify({
+          model: "DeepSeek-V4-Flash-0731",   // V3 계열(비추론) — 빠름. 추론 비교하려면 "deepseek-reasoner"
+          messages,
+          temperature: 0.7,
+          max_tokens: 32768,
+          stream: false,
+        }),
+      });
+    } catch (e) {
+      console.error(`❌ [DeepSeek] 네트워크: ${e.message}`);
+      throw new HttpsError("unavailable", `DeepSeek 연결 실패: ${e.message}`);
+    }
+
+    const text = await res.text();
+    if (!res.ok) {
+      console.error(`❌ [DeepSeek] HTTP ${res.status} — ${text.slice(0, 300)}`);
+      throw new HttpsError("internal", `DeepSeek 오류 ${res.status}`);
+    }
+
+    let data;
+    try { data = JSON.parse(text); }
+    catch { throw new HttpsError("internal", "DeepSeek 응답 파싱 실패"); }
+
+    let raw = data.choices?.[0]?.message?.content ?? "";
+    raw = raw.replace(/<think>[\s\S]*?<\/think>/g, "").trim();  // reasoner 대비 안전망
+    console.log(`🐳 [DeepSeek] 응답 ${raw.length}자`);
+
+    const { text: parsedText, planJson } = parsePlanBlock(raw);
+
+    if (convId) {
+      await c.messages.insertOne({
+        _id: randomUUID(),
+        uid,
+        conversationId: convId,
+        role: "assistant",
+        model: "deepseek",        // ★ 구분자
+        text: parsedText,
+        planJson,
+        enriched: false,
+        createdAt: new Date().toISOString(),
+      });
+      console.log(`💾 [DeepSeek] 메시지 저장`);
     }
 
     return { text: parsedText, planJson };
