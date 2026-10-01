@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../models/message.dart';
 import '../../providers/api_provider.dart';
-import '../../providers/chat_provider.dart';
 import 'widgets/chat_input.dart';
 import 'widgets/message_bubble.dart';
 import '../settings/trip_settings_bar.dart';
@@ -97,17 +96,15 @@ final List<Message> _deepseekMessages = [];
         final hasDeep = list.any((m) => m.isDeepseek);
 
         for (final m in list) {
-          if (m.role == MessageRole.user) {
-            _messages.add(m);
-            if (hasQwen) _qwenMessages.add(m);
-            if (hasDeep) _deepseekMessages.add(m);
-          } else if (m.isQwen) {
-            _qwenMessages.add(m);
-          } else if (m.isDeepseek) {
-            _deepseekMessages.add(m);
-          } else {
-            _messages.add(m);
-          }
+            if (m.model == 'qwen') { _qwenMessages.add(m); }
+            else if (m.model == 'deepseek') { _deepseekMessages.add(m); }
+            else {
+              _messages.add(m);
+              if (m.role == MessageRole.user && m.model == null) {   // 구버전 데이터
+                if (hasQwen) _qwenMessages.add(m);
+                if (hasDeep) _deepseekMessages.add(m);
+              }
+            }
         }
         if (_qwenMessages.isNotEmpty || _deepseekMessages.isNotEmpty) {
           _compareMode = true;
@@ -125,24 +122,10 @@ final List<Message> _deepseekMessages = [];
     } finally {
       if (mounted) setState(() => _loading = false);
     }
-     /* Future.delayed(const Duration(milliseconds: 400), () {
-        if (mounted) _scrollToBottom(immediate: true);
-      });
-
-      for (final m in list) {
-        if (m.isPlan && !m.enriched) _enrichMessage(m.id);
-      }
-
-    } catch (e) {
-      if (mounted) setState(() => _error = '$e');
-    } finally {
-      if (mounted) setState(() => _loading = false);
-    }*/
+  
   }
 
   
-  bool _hasQwenData(List<Message> list) =>
-      list.any((m) => m.isQwen);
       
   Future<void> _send(String text) async {
     if (text.trim().isEmpty || _sending) return;
@@ -153,9 +136,7 @@ final List<Message> _deepseekMessages = [];
 
     setState(() {
       _sending = true;
-      _messages.add(Message(
-        id: 'local-${DateTime.now().microsecondsSinceEpoch}',
-        role: MessageRole.user, text: text, createdAt: DateTime.now()));
+      _messages.add(pending);
       if (_compareMode) {
         final now = DateTime.now();
         _qwenMessages.add(Message(

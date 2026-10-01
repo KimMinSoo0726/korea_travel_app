@@ -548,13 +548,8 @@ Widget _itemTile(PlanItem item, int dayIndex, int itemIndex,
                                     style: TextStyle(
                                         fontSize: 11,
                                         color: Colors.red.shade400)),
-                              if (item.verifyStatus == 'db')
-                                Text('📗 DB',
-                                    style: TextStyle(
-                                        fontSize: 10,
-                                        color: Colors.blue.shade600,
-                                        fontWeight: FontWeight.w600))
-                              else if (item.verifyStatus == 'confirmed')
+                              
+                              if (item.verifyStatus == 'confirmed')
                                 Text('✅ 확인됨',
                                     style: TextStyle(
                                         fontSize: 10,

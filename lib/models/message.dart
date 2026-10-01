@@ -21,7 +21,7 @@ class Message {
 
   bool get isPlan => planJson != null;
   bool get isQwen => model == 'qwen';       // ★
-  bool get isGemini => model == 'gemini';
+  bool get isGemini => model == null || model == 'gemini';
   bool get isDeepseek => model == 'deepseek'; 
 
 

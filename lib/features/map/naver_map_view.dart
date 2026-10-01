@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_functions/cloud_functions.dart';
+
+import '../../services/api_service.dart';
 
 import 'naver_map_stub.dart'
     if (dart.library.js_interop) 'naver_map_web.dart';
@@ -91,26 +92,23 @@ class _DayMapViewState extends State<DayMapView> {
       .map((e) => '${e.lat!.toStringAsFixed(5)},${e.lng!.toStringAsFixed(5)}')
       .join('|');
 
-  Future<void> _loadRoute(List<PlanItem> points) async {
+ Future<void> _loadRoute(List<PlanItem> points) async {
     if (_routeRequested || points.length < 2) return;
     _routeRequested = true;
     setState(() => _routeLoading = true);
 
     try {
-      final res = await FirebaseFunctions.instanceFor(
-        region: 'asia-northeast3',
-      ).httpsCallable('getRoute').call({
-        'points': points
+      final data = await ApiService().getRoute(
+        points
             .map((p) => {
                   'lat': p.lat,
                   'lng': p.lng,
                   'name': p.placeName ?? p.activity,   // ★ 안내용 이름
                 })
             .toList(),
-        'mode': widget.mode,
-      });
+        widget.mode,
+      );
 
-      final data = Map<String, dynamic>.from(res.data as Map);
       final info = RouteInfo.fromMap(data);
       debugPrint(
           '🛣 mode=${widget.mode} 좌표 ${info.path.length}개 캐시=${info.cached}');

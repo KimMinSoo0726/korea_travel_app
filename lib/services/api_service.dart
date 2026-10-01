@@ -1,5 +1,6 @@
-import 'package:cloud_functions/cloud_functions.dart';
-
+import 'dart:convert';
+import 'package:http/http.dart' as http;
+import 'package:firebase_auth/firebase_auth.dart';
 import '../core/constants/app_constants.dart';
 import '../models/conversation.dart';
 import '../models/message.dart';
@@ -20,16 +21,27 @@ List<Map<String, dynamic>> asMapList(dynamic v) {
 }
 
 class ApiService {
-  final _functions =
-      FirebaseFunctions.instanceFor(region: AppConstants.functionsRegion);
 
-  Future<Map<String, dynamic>> _call(
-      String name, [Map<String, dynamic>? params]) async {
-    final callable = _functions.httpsCallable(name);
-    final res = await callable.call(params ?? {});
-    return asMap(res.data);
+  Future<Map<String, dynamic>> _call(String name,
+    [Map<String, dynamic>? params, Duration timeout = const Duration(seconds: 60)]) async {
+  final token = await FirebaseAuth.instance.currentUser?.getIdToken();
+  final res = await http.post(
+    Uri.parse('${AppConstants.apiBase}/api/$name'),
+    headers: {
+      'Content-Type': 'application/json',
+      if (token != null) 'Authorization': 'Bearer $token',
+    },
+    body: jsonEncode({'data': params ?? {}}),
+  ).timeout(timeout);
+
+  Map<String, dynamic> body;
+  try { body = asMap(jsonDecode(utf8.decode(res.bodyBytes))); }
+  catch (_) { throw Exception('서버 응답 오류 (${res.statusCode})'); }
+  if (res.statusCode != 200) {
+    throw Exception(asMap(body['error'])['message'] ?? '서버 오류 ${res.statusCode}');
   }
-
+  return asMap(body['result']);
+}
   // ───────── 대화 ─────────
 
   Future<List<Conversation>> listConversations() async {
@@ -66,7 +78,8 @@ class ApiService {
   }
 
   Future<EnrichResult> enrichPlanMessage(String messageId) async {
-    final data = await _call('enrichPlanMessage', {'messageId': messageId});
+    final data = await _call('enrichPlanMessage', {'messageId': messageId},
+    const Duration(minutes: 3));
     return EnrichResult(
       planJson: data['planJson'] == null
           ? null
@@ -142,51 +155,26 @@ class ApiService {
     });
   }
 
+    Future<QwenResult> _chatLocal(String fn, String? conversationId, String message) async {
+        final data = await _call(fn, {
+          'conversationId': conversationId,
+          'message': message,
+        }, const Duration(minutes: 5));
+        return QwenResult(
+          text: data['text'] ?? '',
+          planJson: data['planJson'] == null ? null : asMap(data['planJson']),
+        );
+      }
 
-  //--qwen
- Future<QwenResult> chatQwen({
-    String? conversationId,
-    required String message,
-  }) async {
-    final callable = _functions.httpsCallable(
-      'chatWithQwen',
-      options: HttpsCallableOptions(
-        timeout: const Duration(minutes: 5),   // ★ 기본 70초 → 5분
-      ),
-    );
-    final res = await callable.call({
-      'conversationId': conversationId,
-      'message': message,
-    });
-    final data = asMap(res.data);
-    return QwenResult(
-      text: data['text'] ?? '',
-      planJson: data['planJson'] == null
-          ? null
-          : (data['planJson'] as Map).map((k, v) => MapEntry('$k', v)),
-    );
-  }
+      Future<QwenResult> chatQwen({String? conversationId, required String message}) =>
+          _chatLocal('chatWithQwen', conversationId, message);
 
-  Future<QwenResult> chatDeepseek({
-    String? conversationId,
-    required String message,
-  }) async {
-    final callable = _functions.httpsCallable(
-      'chatWithDeepSeek',
-      options: HttpsCallableOptions(timeout: const Duration(minutes: 5)),
-    );
-    final res = await callable.call({
-      'conversationId': conversationId,
-      'message': message,
-    });
-    final data = asMap(res.data);
-    return QwenResult(
-      text: data['text'] ?? '',
-      planJson: data['planJson'] == null
-          ? null
-          : (data['planJson'] as Map).map((k, v) => MapEntry('$k', v)),
-    );
-  }
+      Future<QwenResult> chatDeepseek({String? conversationId, required String message}) =>
+          _chatLocal('chatWithDeepSeek', conversationId, message);
+
+
+  Future<Map<String, dynamic>> getRoute(List<Map<String, dynamic>> points, String mode) =>
+      _call('getRoute', {'points': points, 'mode': mode}, const Duration(minutes: 3));
 
 
 // ───────── 북마크 ─────────
